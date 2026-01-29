@@ -196,15 +196,28 @@
       const [results, setResults] = useState([]);
       const [loading, setLoading] = useState(false);
       const [errorMsg, setErrorMsg] = useState('');
+      const [isReady, setIsReady] = useState(false); // 新增：服務準備狀態
       const placesService = useRef(null);
       const autocompleteService = useRef(null);
 
+      // 更強健的初始化檢查 (Polling)
       useEffect(() => {
-        if (apiKey && window.google && window.google.maps && window.google.maps.places) {
-          autocompleteService.current = new window.google.maps.places.AutocompleteService();
-          const div = document.createElement('div');
-          placesService.current = new window.google.maps.places.PlacesService(div);
-        }
+        if (!apiKey) return;
+        
+        // 每 0.5 秒檢查一次 Google 服務是否載入
+        const checkGoogle = setInterval(() => {
+            if (window.google && window.google.maps && window.google.maps.places) {
+                if (!autocompleteService.current) {
+                    autocompleteService.current = new window.google.maps.places.AutocompleteService();
+                    const div = document.createElement('div');
+                    placesService.current = new window.google.maps.places.PlacesService(div);
+                }
+                setIsReady(true);
+                clearInterval(checkGoogle);
+            }
+        }, 500);
+
+        return () => clearInterval(checkGoogle);
       }, [apiKey]);
 
       const handleSearch = () => {
@@ -218,6 +231,12 @@
           return;
         }
 
+        if (!isReady) {
+             setErrorMsg('地圖服務載入中...請稍後再試');
+             setLoading(false);
+             return;
+        }
+
         if (autocompleteService.current) {
           autocompleteService.current.getPlacePredictions({
             input: query,
@@ -227,10 +246,14 @@
             if (status === 'OK' && predictions) {
               setResults(predictions);
             } else {
-              setErrorMsg(`搜尋失敗: ${status}`);
+              setErrorMsg(`搜尋失敗: ${status} (請確認 Key 是否啟用 Places API)`);
               setResults([]);
             }
           });
+        } else {
+            // 萬一服務還是沒有，顯示錯誤
+            setErrorMsg('無法連接 Google 地圖服務');
+            setLoading(false);
         }
       };
 
