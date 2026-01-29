@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>Fukuoka Trip App</title>
+  <!-- 預先連線加速 CDN -->
   <link rel="preconnect" href="https://cdn.tailwindcss.com">
   <link rel="preconnect" href="https://esm.sh">
   <link rel="preconnect" href="https://unpkg.com">
@@ -23,10 +24,12 @@
     .no-scrollbar::-webkit-scrollbar { display: none; }
     .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
     .safe-area-bottom { padding-bottom: env(safe-area-inset-bottom); }
+    /* 防止選取文字干擾操作 */
     body { -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
   </style>
 </head>
 <body class="bg-stone-50 text-stone-800">
+  <!-- 啟動畫面：在 React 載入前顯示，解決白屏問題 -->
   <div id="root" class="min-h-screen">
     <div class="fixed inset-0 flex flex-col items-center justify-center bg-stone-50 z-50">
       <div class="h-12 w-12 animate-spin rounded-full border-4 border-stone-200 border-t-indigo-600"></div>
@@ -41,31 +44,53 @@
       MapPin, Wallet, Info, Plus, Trash2, ArrowUp, ArrowDown, Navigation, Phone, 
       Home, Plane, Utensils, ShoppingBag, Train, Camera, Edit2, Map as MapIcon, 
       List, Search, X, Check, AlertCircle, Key, Loader2, RotateCw, Footprints, 
-      Car, Bus, BedDouble, Share2, Star
+      Car, Bus, BedDouble, Share2, Star, ExternalLink
     } from 'lucide-react';
 
-    // --- Google Maps 載入器 ---
+    // --- Google Maps 載入器 (Singleton 極速版) ---
+    let googleMapsPromise = null;
+
     const loadGoogleMapsScript = (apiKey) => {
       if (!apiKey) return Promise.reject(new Error("No API Key"));
-      if (window.google && window.google.maps && window.google.maps.places) return Promise.resolve(window.google.maps);
+      
+      // 1. 如果全域變數已經存在，直接回傳 (0秒延遲)
+      if (window.google && window.google.maps) {
+        return Promise.resolve(window.google.maps);
+      }
 
-      return new Promise((resolve, reject) => {
-        const existingScript = document.getElementById('google-maps-script');
-        if (existingScript) existingScript.remove();
+      // 2. 如果已經在載入中，回傳同一個 Promise
+      if (googleMapsPromise) return googleMapsPromise;
+
+      // 3. 建立新的載入請求
+      googleMapsPromise = new Promise((resolve, reject) => {
+        if (document.getElementById('google-maps-script')) {
+           const checkInterval = setInterval(() => {
+             if (window.google && window.google.maps) {
+               clearInterval(checkInterval);
+               resolve(window.google.maps);
+             }
+           }, 100);
+           return;
+        }
 
         const script = document.createElement('script');
         script.id = 'google-maps-script';
-        // 載入 places, geometry 庫
-        script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places,geometry&language=zh-TW&v=weekly`;
+        // 載入 places, marker (新版必備)
+        script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places,marker,geometry&language=zh-TW&v=weekly`;
         script.async = true;
         script.defer = true;
         script.onload = () => {
           if (window.google && window.google.maps) resolve(window.google.maps);
           else reject(new Error("Google Maps load failed"));
         };
-        script.onerror = () => reject(new Error("Google Maps Script Error"));
+        script.onerror = () => {
+          googleMapsPromise = null;
+          reject(new Error("Google Maps Script Error"));
+        };
         document.head.appendChild(script);
       });
+
+      return googleMapsPromise;
     };
 
     const getTripDate = (dayIndex) => {
@@ -114,37 +139,92 @@
       );
     };
 
-    // --- Google Map View ---
+    // --- Google Map View (使用 AdvancedMarkerElement) ---
     const GoogleMapView = ({ locations, apiKey, onAuthError }) => {
       const mapRef = useRef(null);
       const mapInstanceRef = useRef(null);
       const markersRef = useRef([]);
 
       useEffect(() => {
-        window.gm_authFailure = () => { if (onAuthError) onAuthError(); };
+        window.gm_authFailure = () => { 
+            console.error("Google Maps Auth Failure Triggered");
+            if (onAuthError) onAuthError(); 
+        };
+        
         if (!apiKey) return;
-        loadGoogleMapsScript(apiKey).then((googleMaps) => {
-          if (!mapRef.current) return;
-          if (!mapInstanceRef.current) {
-            mapInstanceRef.current = new googleMaps.Map(mapRef.current, {
-              center: { lat: 33.5902, lng: 130.4220 },
-              zoom: 13,
-              disableDefaultUI: false,
-              zoomControl: true,
-              gestureHandling: 'greedy' 
-            });
-          }
-          markersRef.current.forEach(m => m.setMap(null));
-          markersRef.current = [];
-          const bounds = new googleMaps.LatLngBounds();
-          locations.forEach((loc, index) => {
-            const position = { lat: loc.lat, lng: loc.lng };
-            const marker = new googleMaps.Marker({ position, map: mapInstanceRef.current, label: { text: (index + 1).toString(), color: "white", fontWeight: "bold" }, title: loc.name });
-            markersRef.current.push(marker);
-            bounds.extend(position);
-          });
-          if (locations.length > 0) mapInstanceRef.current.fitBounds(bounds);
-        }).catch(err => console.error("Map Load Error", err));
+        
+        const initMap = async () => {
+            try {
+                const googleMaps = await loadGoogleMapsScript(apiKey);
+                const { Map } = await google.maps.importLibrary("maps");
+                const { AdvancedMarkerElement, PinElement } = await google.maps.importLibrary("marker");
+
+                if (!mapRef.current) return;
+                
+                if (!mapInstanceRef.current) {
+                    mapInstanceRef.current = new Map(mapRef.current, {
+                    center: { lat: 33.5902, lng: 130.4220 },
+                    zoom: 13,
+                    mapId: 'DEMO_MAP_ID', // 必須有 Map ID 才能用 Advanced Marker (DEMO 即可)
+                    disableDefaultUI: false,
+                    zoomControl: true,
+                    gestureHandling: 'greedy' 
+                    });
+                }
+                
+                // 清除舊標記
+                markersRef.current.forEach(m => m.map = null);
+                markersRef.current = [];
+                
+                const bounds = new google.maps.LatLngBounds();
+                
+                locations.forEach((loc, index) => {
+                    const position = { lat: loc.lat, lng: loc.lng };
+                    
+                    // 建立自定義 Pin (序號)
+                    const pin = new PinElement({
+                        glyph: (index + 1).toString(),
+                        background: '#d32f2f',
+                        borderColor: '#b71c1c',
+                        glyphColor: 'white',
+                    });
+
+                    const marker = new AdvancedMarkerElement({
+                        map: mapInstanceRef.current,
+                        position: position,
+                        title: loc.name,
+                        content: pin.element
+                    });
+
+                    // Info Window
+                    const infoWindow = new google.maps.InfoWindow({
+                         content: `
+                            <div style="font-family: sans-serif; padding: 4px;">
+                                <strong style="font-size: 14px;">${loc.name}</strong><br>
+                                <span style="font-size: 12px; color: #555;">${loc.desc}</span><br>
+                                <a href="https://www.google.com/maps/search/?api=1&query=${loc.lat},${loc.lng}&query_place_id=${loc.placeId || ''}" target="_blank" style="color: #2563eb; text-decoration: underline; font-size: 12px; margin-top: 4px; display: inline-block;">在 Google Maps 開啟</a>
+                            </div>
+                        `
+                    });
+
+                    marker.addListener('click', () => {
+                        infoWindow.open({
+                            anchor: marker,
+                            map: mapInstanceRef.current,
+                        });
+                    });
+
+                    markersRef.current.push(marker);
+                    bounds.extend(position);
+                });
+
+                if (locations.length > 0) mapInstanceRef.current.fitBounds(bounds);
+            } catch (e) {
+                console.error("Map render error", e);
+            }
+        };
+
+        initMap();
       }, [locations, apiKey]);
 
       if (!apiKey) return <div className="w-full h-64 flex items-center justify-center bg-stone-100 text-stone-400 border-2 border-dashed rounded-2xl"><Key size={32} className="mr-2"/>請輸入 API Key</div>;
@@ -152,22 +232,18 @@
       return <div ref={mapRef} className="w-full h-[60vh] rounded-2xl overflow-hidden shadow-inner border border-stone-200 bg-stone-100" />;
     };
 
-    // --- SearchBar (升級版: Text Search) ---
+    // --- SearchBar (升級版: 使用 New Places API) ---
     const SearchBar = ({ onAdd, apiKey }) => {
       const [query, setQuery] = useState('');
       const [results, setResults] = useState([]);
       const [loading, setLoading] = useState(false);
       const [isReady, setIsReady] = useState(false);
       const [errorMsg, setErrorMsg] = useState('');
-      const placesService = useRef(null);
 
       useEffect(() => {
         if (!apiKey) return;
         const checkGoogle = setInterval(() => {
-            if (window.google && window.google.maps && window.google.maps.places) {
-                const div = document.createElement('div');
-                // 初始化 PlacesService 用於文字搜尋
-                placesService.current = new window.google.maps.places.PlacesService(div);
+            if (window.google && window.google.maps) {
                 setIsReady(true);
                 clearInterval(checkGoogle);
             }
@@ -175,45 +251,52 @@
         return () => clearInterval(checkGoogle);
       }, [apiKey]);
 
-      const handleSearch = () => {
+      const handleSearch = async () => {
         if (!query) return;
         setLoading(true);
         setErrorMsg('');
 
-        if (placesService.current) {
-          // 使用 textSearch 而不是 getPlacePredictions (Autocomplete)
-          // 這樣可以找到 "佐賀機場" 這類非精確地址的地標
-          const request = {
-            query: query,
-            // 這裡可以加上 location / radius 來優化搜尋範圍，但先不設限以搜到為主
-          };
+        try {
+            // 使用新版 Places Library (Dynamic Import)
+            const { Place } = await google.maps.importLibrary("places");
+            
+            // 執行文字搜尋 (Text Search) - 新版 API
+            const { places } = await Place.searchByText({
+                textQuery: query,
+                fields: ['displayName', 'location', 'formattedAddress', 'rating', 'userRatingCount', 'id'],
+                locationBias: { lat: 33.59, lng: 130.42 }, // 稍微偏好福岡座標 (選填)
+            });
 
-          placesService.current.textSearch(request, (results, status) => {
-            setLoading(false);
-            if (status === window.google.maps.places.PlacesServiceStatus.OK && results) {
-              setResults(results);
+            if (places && places.length > 0) {
+                setResults(places);
             } else {
-              setErrorMsg(`搜尋無結果: ${status}`);
-              setResults([]);
+                setErrorMsg('搜尋無結果');
+                setResults([]);
             }
-          });
+        } catch (e) {
+            console.error("Search failed", e);
+            setErrorMsg(`搜尋失敗: ${e.message}`);
+            setResults([]);
+        } finally {
+            setLoading(false);
         }
       };
 
       const handleSelectPlace = (place) => {
-        // textSearch 回傳的結果已經包含 geometry，不需要再 call getDetails (省 API!)
+        // 從新版 Place 物件轉成 App 格式
+        // 注意：新版 API 直接回傳 Place 物件，部分屬性名稱不同
         onAdd({
           id: Date.now(),
           type: 'spot',
-          name: place.name,
-          lat: place.geometry.location.lat(),
-          lng: place.geometry.location.lng(),
-          desc: place.formatted_address || '',
-          placeId: place.place_id,
+          name: place.displayName,
+          lat: place.location.lat(),
+          lng: place.location.lng(),
+          desc: place.formattedAddress || '',
+          placeId: place.id,
           note: '',
           time: '',
-          rating: place.rating, // 額外儲存評分
-          user_ratings_total: place.user_ratings_total // 額外儲存評論數
+          rating: place.rating, 
+          user_ratings_total: place.userRatingCount 
         });
         setQuery('');
         setResults([]);
@@ -242,10 +325,10 @@
             <div className="absolute top-full left-0 right-0 mt-2 bg-white rounded-2xl shadow-xl border z-50 max-h-60 overflow-y-auto">
               {results.map((p, i) => (
                 <button key={i} onClick={() => handleSelectPlace(p)} className="w-full text-left p-4 hover:bg-stone-50 border-b last:border-none">
-                  <div className="font-bold text-sm text-stone-800">{p.name}</div>
+                  <div className="font-bold text-sm text-stone-800">{p.displayName}</div>
                   <div className="flex items-center gap-1 mt-1">
                     {p.rating && <span className="text-[10px] bg-yellow-100 text-yellow-700 px-1 rounded flex items-center gap-0.5"><Star size={8} fill="currentColor"/> {p.rating}</span>}
-                    <div className="text-[10px] text-stone-400 truncate">{p.formatted_address}</div>
+                    <div className="text-[10px] text-stone-400 truncate">{p.formattedAddress}</div>
                   </div>
                 </button>
               ))}
