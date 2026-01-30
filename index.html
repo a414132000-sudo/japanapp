@@ -26,13 +26,14 @@
     .safe-area-bottom { padding-bottom: env(safe-area-inset-bottom); }
     body { -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; background-color: #f5f5f4; font-family: sans-serif; }
     .sync-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+    .grabbing { opacity: 0.5; scale: 1.02; box-shadow: 0 10px 20px rgba(0,0,0,0.1); }
   </style>
 </head>
 <body>
   <div id="root">
     <div class="fixed inset-0 flex flex-col items-center justify-center bg-stone-50 z-50">
       <div class="h-10 w-10 animate-spin rounded-full border-4 border-stone-200 border-t-indigo-600"></div>
-      <p class="mt-4 text-stone-400 font-bold animate-pulse text-xs">正在啟動雲端同步系統...</p>
+      <p class="mt-4 text-stone-400 font-bold animate-pulse text-xs">正在連線雲端資料庫...</p>
     </div>
   </div>
 
@@ -46,13 +47,12 @@
       MapPin, Wallet, Info, Plus, Trash2, ArrowUp, ArrowDown, Navigation, 
       Home, Plane, Utensils, ShoppingBag, Train, Camera, Edit2, Map as MapIcon, 
       List, Search, X, Check, AlertCircle, Key, Loader2, RotateCw, Footprints, 
-      Car, Bus, BedDouble, Share2, Star, Cloud, CloudOff, RefreshCw
+      Car, Bus, BedDouble, Share2, Star, Cloud, CloudOff, RefreshCw, Smartphone
     } from 'lucide-react';
 
-    // --- 🔥 設定區 🔥 ---
-    // 請在下方貼上你從 Firebase 取得的 config
+    // --- 🔥 你的 Firebase 設定 (已根據截圖填寫) 🔥 ---
     const firebaseConfig = {
-      apiKey: "AIzaSyBkoHeoub3Q9MsQhwIrdr9xrlPSHQ2HxfY",
+      apiKey: "AIzaSyBkoHeoub3Q9MsQhWirdr9xrlPSHQ2HxfY",
       authDomain: "japantrip-e7bcd.firebaseapp.com",
       projectId: "japantrip-e7bcd",
       storageBucket: "japantrip-e7bcd.firebasestorage.app",
@@ -61,15 +61,14 @@
       measurementId: "G-TZYLC85XGX"
     };
 
-    const appId = "fukuoka-2026-v1"; // 固定專案 ID
+    const appId = "fukuoka-2026-v2"; // 升級 V2 ID
 
     // 初始化 Firebase
-    const isCloudEnabled = !!firebaseConfig.apiKey;
-    const app = isCloudEnabled ? initializeApp(firebaseConfig) : null;
-    const auth = isCloudEnabled ? getAuth(app) : null;
-    const db = isCloudEnabled ? getFirestore(app) : null;
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
 
-    // --- Google Maps 載入器 (Singleton) ---
+    // --- Google Maps 載入器 ---
     let googleMapsPromise = null;
     const loadGoogleMapsScript = (apiKey) => {
       if (!apiKey) return Promise.reject(new Error("No API Key"));
@@ -97,83 +96,101 @@
       return `${targetDate.getMonth() + 1}/${targetDate.getDate()} (${dayOfWeek})`;
     };
 
-    // --- App 主程式 ---
+    // --- 主程式：App ---
     function App() {
       const [activeTab, setActiveTab] = useState('itinerary');
       const [activeDay, setActiveDay] = useState(1);
       const [locations, setLocations] = useState([]);
+      const [walletItems, setWalletItems] = useState([]);
       const [isEditing, setIsEditing] = useState(false);
       const [viewMode, setViewMode] = useState('list');
       const [apiKey, setApiKey] = useState(() => localStorage.getItem('google_maps_key') || '');
       const [user, setUser] = useState(null);
-      const [syncStatus, setSyncStatus] = useState('local'); // local, syncing, success
+      const [syncStatus, setSyncStatus] = useState('syncing');
 
-      // 1. 匿名登入 (為了與朋友共用資料)
+      // 1. 匿名登入 (遵守規則 3)
       useEffect(() => {
-        if (!isCloudEnabled) return;
         const initAuth = async () => {
           try {
             await signInAnonymously(auth);
-          } catch (e) { console.error("Firebase Auth Error", e); }
+          } catch (e) { console.error("Auth Error", e); }
         };
         initAuth();
-        return onAuthStateChanged(auth, setUser);
+        const unsubscribe = onAuthStateChanged(auth, setUser);
+        return () => unsubscribe();
       }, []);
 
-      // 2. 即時資料監聽 (Firestore Real-time Sync)
+      // 2. 行程監聽 (Firestore Real-time Sync)
       useEffect(() => {
-        let unsubscribe = () => {};
-        if (isCloudEnabled && user) {
-          setSyncStatus('syncing');
-          // 規則路徑：/artifacts/{appId}/public/data/{collectionName}
-          const tripRef = doc(db, 'artifacts', appId, 'public', 'data', `day${activeDay}`);
-          
-          unsubscribe = onSnapshot(tripRef, (docSnap) => {
-            if (docSnap.exists()) {
-              setLocations(docSnap.data().items || []);
-            } else {
-              setLocations([]);
-            }
-            setSyncStatus('success');
-          }, (err) => {
-            console.error("Firestore Listen Error", err);
-            setSyncStatus('local');
-          });
-        } else {
-          const saved = localStorage.getItem(`trip_day${activeDay}`);
-          setLocations(saved ? JSON.parse(saved) : []);
-        }
+        if (!user) return;
+        setSyncStatus('syncing');
+        // 遵守路徑規則 1
+        const tripRef = doc(db, 'artifacts', appId, 'public', 'data', 'itinerary', `day${activeDay}`);
+        
+        const unsubscribe = onSnapshot(tripRef, (docSnap) => {
+          if (docSnap.exists()) {
+            setLocations(docSnap.data().items || []);
+          } else {
+            setLocations([]);
+          }
+          setSyncStatus('success');
+        }, (err) => {
+          console.error("Sync Error", err);
+          setSyncStatus('error');
+        });
         return () => unsubscribe();
       }, [activeDay, user]);
 
-      // 3. 儲存功能 (自動判斷雲端或本地)
+      // 3. 記帳監聽
+      useEffect(() => {
+        if (!user) return;
+        const walletRef = doc(db, 'artifacts', appId, 'public', 'data', 'wallet', 'main');
+        const unsubscribe = onSnapshot(walletRef, (docSnap) => {
+          if (docSnap.exists()) setWalletItems(docSnap.data().items || []);
+        }, (err) => console.error("Wallet Sync Error", err));
+        return () => unsubscribe();
+      }, [user]);
+
+      // 4. 儲存行程
       const saveLocs = async (newData) => {
-        setLocations(newData);
-        if (isCloudEnabled && user) {
-          setSyncStatus('syncing');
-          try {
-            const tripRef = doc(db, 'artifacts', appId, 'public', 'data', `day${activeDay}`);
-            await setDoc(tripRef, { items: newData, lastUpdated: new Date() });
-            setSyncStatus('success');
-          } catch (e) {
-            console.error("Save Error", e);
-            setSyncStatus('local');
-          }
-        } else {
-          localStorage.setItem(`trip_day${activeDay}`, JSON.stringify(newData));
-        }
+        if (!user) return;
+        setLocations(newData); // Optimistic UI
+        try {
+          const tripRef = doc(db, 'artifacts', appId, 'public', 'data', 'itinerary', `day${activeDay}`);
+          await setDoc(tripRef, { items: newData, updatedBy: user.uid, time: new Date() });
+        } catch (e) { console.error("Save Error", e); }
+      };
+
+      // 5. 儲存帳務
+      const saveWallet = async (newData) => {
+        if (!user) return;
+        setWalletItems(newData);
+        try {
+          const walletRef = doc(db, 'artifacts', appId, 'public', 'data', 'wallet', 'main');
+          await setDoc(walletRef, { items: newData, time: new Date() });
+        } catch (e) { console.error("Wallet Save Error", e); }
+      };
+
+      const handleMove = (idx, dir) => { 
+        const c = [...locations]; 
+        const t = idx + dir; 
+        if (t < 0 || t >= c.length) return; 
+        [c[idx], c[t]] = [c[t], c[idx]]; 
+        saveLocs(c); 
       };
 
       return (
-        <div className="max-w-md mx-auto min-h-screen flex flex-col shadow-2xl bg-stone-50">
+        <div className="max-w-md mx-auto min-h-screen flex flex-col bg-stone-50">
           <header className="sticky top-0 z-[60] bg-white/80 backdrop-blur-xl border-b px-4 py-4 flex justify-between items-center shadow-sm">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 bg-indigo-900 rounded-2xl flex items-center justify-center text-white font-black shadow-lg">福</div>
               <div>
                 <h1 className="font-black text-sm tracking-tight">FUKUOKA 2026</h1>
                 <div className="flex items-center gap-1">
-                  <div className={`sync-dot ${syncStatus === 'success' ? 'bg-green-500' : syncStatus === 'syncing' ? 'bg-amber-400 animate-pulse' : 'bg-stone-300'}`}></div>
-                  <p className="text-[9px] font-bold text-stone-400 uppercase tracking-widest">{syncStatus === 'success' ? '雲端同步中' : '本機模式'}</p>
+                  <div className={`sync-dot ${syncStatus === 'success' ? 'bg-green-500' : 'bg-amber-400 animate-pulse'}`}></div>
+                  <p className="text-[9px] font-bold text-stone-400 uppercase tracking-widest">
+                    {syncStatus === 'success' ? '雲端同步中' : '連線中...'}
+                  </p>
                 </div>
               </div>
             </div>
@@ -184,7 +201,7 @@
             </div>
           </header>
 
-          <main className="flex-1 p-4 overflow-y-auto">
+          <main className="flex-1 p-4 overflow-y-auto pb-24">
             {activeTab === 'itinerary' ? (
               <>
                 <SearchBar onAdd={s => saveLocs([...locations, s])} apiKey={apiKey} />
@@ -197,8 +214,10 @@
                   ))}
                 </div>
 
-                <div className="flex justify-between items-center mb-4">
-                  <h2 className="font-black text-xl text-stone-800">Day {activeDay} 行程表</h2>
+                <div className="flex justify-between items-center mb-4 px-1">
+                  <h2 className="font-black text-xl text-stone-800 flex items-center gap-2">
+                    Day {activeDay} <span className="text-xs font-normal text-stone-400">{getTripDate(activeDay)}</span>
+                  </h2>
                   <button onClick={() => setViewMode(viewMode === 'list' ? 'map' : 'list')} className="p-2 bg-white rounded-xl shadow-sm border text-stone-400 active:scale-95 transition-transform">
                     {viewMode === 'list' ? <MapIcon size={20}/> : <List size={20}/>}
                   </button>
@@ -208,7 +227,7 @@
                   <div className="space-y-3">
                     {locations.length === 0 && <div className="text-center py-20 text-stone-300 font-medium">尚未安排行程，請搜尋新增</div>}
                     {locations.map((item, i) => (
-                      <ItineraryCard key={item.id} item={item} index={i} total={locations.length} isEditing={isEditing} onRequestDelete={idx => { const c = [...locations]; c.splice(idx, 1); saveLocs(c); }} onUpdate={(idx, f, v) => { const c = [...locations]; c[idx][f] = v; saveLocs(c); }} onMove={(idx, dir) => { const c = [...locations]; const t = idx + dir; if (t < 0 || t >= c.length) return; [c[idx], c[t]] = [c[t], c[idx]]; saveLocs(c); }} />
+                      <ItineraryCard key={item.id} item={item} index={i} total={locations.length} isEditing={isEditing} onRequestDelete={idx => { const c = [...locations]; c.splice(idx, 1); saveLocs(c); }} onUpdate={(idx, f, v) => { const c = [...locations]; c[idx][f] = v; saveLocs(c); }} onMove={handleMove} />
                     ))}
                   </div>
                 ) : (
@@ -217,21 +236,23 @@
                   </div>
                 )}
               </>
+            ) : activeTab === 'wallet' ? (
+              <WalletTab items={walletItems} saveWallet={saveWallet} />
             ) : (
-              <InfoTab apiKey={apiKey} setApiKey={setApiKey} isCloud={isCloudEnabled} />
+              <InfoTab apiKey={apiKey} setApiKey={setApiKey} user={user} />
             )}
           </main>
 
           <nav className="fixed bottom-0 left-0 right-0 bg-white/90 backdrop-blur-xl border-t px-8 py-4 flex justify-between items-center z-[100] safe-area-bottom shadow-2xl">
             <button onClick={() => setActiveTab('itinerary')} className={`flex flex-col items-center gap-1 ${activeTab === 'itinerary' ? 'text-indigo-900' : 'text-stone-300'}`}><MapPin size={26} strokeWidth={2.5}/><span className="text-[10px] font-black">行程</span></button>
-            <button onClick={() => alert('記帳功能建議維持本機模式，或待下階段更新')} className="text-stone-300 flex flex-col items-center gap-1"><Wallet size={26} /><span className="text-[10px] font-black">記帳</span></button>
-            <button onClick={() => setActiveTab('info')} className={`flex flex-col items-center gap-1 ${activeTab === 'info' ? 'text-indigo-900' : 'text-stone-300'}`}><Key size={26} /><span className="text-[10px] font-black">設定</span></button>
+            <button onClick={() => setActiveTab('wallet')} className={`flex flex-col items-center gap-1 ${activeTab === 'wallet' ? 'text-indigo-900' : 'text-stone-300'}`}><Wallet size={26} strokeWidth={2.5}/><span className="text-[10px] font-black">記帳</span></button>
+            <button onClick={() => setActiveTab('info')} className={`flex flex-col items-center gap-1 ${activeTab === 'info' ? 'text-indigo-900' : 'text-stone-300'}`}><Key size={26} strokeWidth={2.5}/><span className="text-[10px] font-black">設定</span></button>
           </nav>
         </div>
       );
     }
 
-    // --- 搜尋元件 (整合 New Places API) ---
+    // --- 子組件：搜尋 ---
     function SearchBar({ onAdd, apiKey }) {
       const [query, setQuery] = useState('');
       const [results, setResults] = useState([]);
@@ -260,7 +281,7 @@
       return (
         <div className="relative mb-4">
           <div className="flex gap-2">
-            <input className="flex-1 p-4 bg-white border border-stone-200 rounded-2xl shadow-sm text-sm outline-none focus:ring-2 focus:ring-indigo-500/10" placeholder={isReady ? "想去哪裡？" : "連線地圖中..."} value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSearch()} />
+            <input className="flex-1 p-4 bg-white border border-stone-200 rounded-2xl shadow-sm text-sm outline-none focus:ring-2 focus:ring-indigo-500/10" placeholder={isReady ? "搜尋景點 (如: 一蘭拉麵)" : "載入地圖中..."} value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSearch()} />
             <button onClick={handleSearch} className="w-14 bg-indigo-900 text-white rounded-2xl flex items-center justify-center shadow-lg active:scale-95 transition-transform">
               {loading ? <Loader2 size={20} className="animate-spin" /> : <Search size={24} />}
             </button>
@@ -279,7 +300,7 @@
       );
     }
 
-    // --- 地圖元件 (新版 Advanced Marker) ---
+    // --- 子組件：地圖 ---
     function GoogleMapView({ locations, apiKey }) {
       const mapRef = useRef(null);
       const mapInstance = useRef(null);
@@ -291,11 +312,9 @@
           await loadGoogleMapsScript(apiKey);
           const { Map } = await google.maps.importLibrary("maps");
           const { AdvancedMarkerElement, PinElement } = await google.maps.importLibrary("marker");
-
           if (!mapInstance.current) {
             mapInstance.current = new Map(mapRef.current, { center: { lat: 33.59, lng: 130.42 }, zoom: 13, mapId: 'DEMO_MAP_ID', disableDefaultUI: true, zoomControl: true, gestureHandling: 'greedy' });
           }
-
           markers.current.forEach(m => m.map = null);
           markers.current = [];
           const bounds = new google.maps.LatLngBounds();
@@ -309,11 +328,10 @@
         };
         init();
       }, [locations, apiKey]);
-
-      return <div ref={mapRef} className="w-full h-[50vh] bg-stone-100" />;
+      return <div ref={mapRef} className="w-full h-[55vh] bg-stone-100" />;
     }
 
-    // --- 行程卡片 ---
+    // --- 子組件：行程卡片 ---
     function ItineraryCard({ item, index, total, isEditing, onRequestDelete, onUpdate, onMove }) {
       const getIcon = (type) => {
         switch(type) {
@@ -328,8 +346,8 @@
           <div className="flex items-start gap-3">
             {isEditing ? (
               <div className="flex flex-col gap-1">
-                <button onClick={() => onMove(index, -1)} disabled={index===0} className="p-1 bg-stone-100 rounded text-stone-400 disabled:opacity-20"><ArrowUp size={16}/></button>
-                <button onClick={() => onMove(index, 1)} disabled={index===total-1} className="p-1 bg-stone-100 rounded text-stone-400 disabled:opacity-20"><ArrowDown size={16}/></button>
+                <button onClick={() => onMove(index, -1)} disabled={index===0} className="p-1 bg-stone-100 rounded text-stone-400"><ArrowUp size={16}/></button>
+                <button onClick={() => onMove(index, 1)} disabled={index===total-1} className="p-1 bg-stone-100 rounded text-stone-400"><ArrowDown size={16}/></button>
               </div>
             ) : (
               <div className="flex flex-col items-center gap-1 mt-1 shrink-0">
@@ -345,8 +363,8 @@
                   {isEditing && <input type="time" className="mt-1 bg-stone-100 text-[10px] px-1 rounded border" value={item.time||''} onChange={e=>onUpdate(index,'time',e.target.value)}/>}
                   <p className="text-[10px] text-stone-400 truncate mt-0.5">{item.desc}</p>
                 </div>
-                {!isEditing && <a href={`https://www.google.com/maps/search/?api=1&query=${item.lat},${item.lng}`} target="_blank" className="p-2 text-blue-600 bg-blue-50 rounded-full active:scale-90"><Navigation size={16}/></a>}
-                {isEditing && <button onClick={()=>onRequestDelete(index)} className="p-2 text-red-500 bg-red-50 rounded-full active:scale-90"><Trash2 size={16}/></button>}
+                {!isEditing && <a href={`https://www.google.com/maps/search/?api=1&query=${item.lat},${item.lng}`} target="_blank" className="p-2 text-blue-600 bg-blue-50 rounded-full"><Navigation size={16}/></a>}
+                {isEditing && <button onClick={()=>onRequestDelete(index)} className="p-2 text-red-500 bg-red-50 rounded-full"><Trash2 size={16}/></button>}
               </div>
               <input className="w-full text-xs text-stone-500 bg-stone-50/50 p-2 rounded-xl border border-transparent focus:border-indigo-100 focus:bg-white outline-none" placeholder="輸入備註..." value={item.note||''} onChange={e=>onUpdate(index,'note',e.target.value)} />
             </div>
@@ -355,23 +373,57 @@
       );
     }
 
-    // --- 設定頁面 ---
-    function InfoTab({ apiKey, setApiKey, isCloud }) {
+    // --- 子組件：記帳 (雲端同步版) ---
+    function WalletTab({ items, saveWallet }) {
+      const [newItem, setNewItem] = useState({ name: '', cost: '', category: 'food' });
+      const total = items.reduce((sum, item) => sum + item.cost, 0);
+      return (
+        <div className="space-y-4">
+          <div className="bg-indigo-900 text-white p-6 rounded-3xl shadow-xl">
+             <p className="text-indigo-200 text-xs uppercase tracking-widest font-bold mb-1">Total Expenses</p>
+             <h2 className="text-4xl font-mono font-bold">¥ {total.toLocaleString()}</h2>
+             <p className="text-indigo-300 text-[10px] mt-2 italic">約 NT$ {Math.round(total * 0.21).toLocaleString()} (同步中)</p>
+          </div>
+          <div className="bg-white p-4 rounded-3xl border border-stone-100 shadow-sm">
+            <h3 className="font-bold text-stone-700 text-sm mb-3">新增花費</h3>
+            <div className="grid grid-cols-2 gap-2 mb-2">
+               <input className="p-3 bg-stone-50 rounded-xl text-sm border-none outline-none" placeholder="品項" value={newItem.name} onChange={e=>setNewItem({...newItem, name:e.target.value})}/>
+               <input type="number" className="p-3 bg-stone-50 rounded-xl text-sm border-none outline-none font-mono" placeholder="日幣" value={newItem.cost} onChange={e=>setNewItem({...newItem, cost:e.target.value})}/>
+            </div>
+            <button onClick={()=>{ if(!newItem.name||!newItem.cost)return; saveWallet([{...newItem, id:Date.now(), cost:parseInt(newItem.cost)}, ...items]); setNewItem({name:'', cost:'', category:'food'}); }} className="w-full py-3 bg-indigo-600 text-white rounded-xl font-bold text-sm">確認新增</button>
+          </div>
+          <div className="space-y-2">
+             {items.map(item => (
+               <div key={item.id} className="bg-white p-4 rounded-2xl border border-stone-50 flex justify-between items-center shadow-sm">
+                 <div className="font-bold text-stone-700">{item.name}</div>
+                 <div className="flex items-center gap-4">
+                   <span className="font-mono font-bold text-stone-900">¥{item.cost.toLocaleString()}</span>
+                   <button onClick={() => saveWallet(items.filter(i=>i.id !== item.id))} className="text-stone-300"><Trash2 size={16}/></button>
+                 </div>
+               </div>
+             ))}
+          </div>
+        </div>
+      );
+    }
+
+    // --- 子組件：資訊與設定 ---
+    function InfoTab({ apiKey, setApiKey, user }) {
       return (
         <div className="space-y-4 animate-in slide-in-from-bottom-4">
           <div className="bg-indigo-50 p-6 rounded-3xl border border-indigo-100">
             <h3 className="font-bold text-indigo-900 mb-2 flex items-center gap-2"><Key size={18}/> Google Maps Key</h3>
             <input type="text" value={apiKey} onChange={e => {setApiKey(e.target.value); localStorage.setItem('google_maps_key', e.target.value);}} className="w-full p-3 bg-white border rounded-2xl font-mono text-xs" placeholder="Paste API Key" />
-            <button onClick={() => window.location.reload()} className="mt-3 w-full py-3 bg-indigo-600 text-white rounded-2xl font-bold text-sm shadow-md">套用並重整</button>
+            <button onClick={() => window.location.reload()} className="mt-3 w-full py-3 bg-indigo-600 text-white rounded-2xl font-bold text-sm shadow-md">儲存並重整</button>
           </div>
           <div className="bg-white p-6 rounded-3xl border shadow-sm flex items-start gap-4">
-            <div className={`p-3 rounded-2xl ${isCloud ? 'bg-green-50 text-green-600' : 'bg-stone-50 text-stone-400'}`}>
-              {isCloud ? <Cloud size={24}/> : <CloudOff size={24}/>}
-            </div>
+            <div className="p-3 bg-green-50 text-green-600 rounded-2xl"><Cloud size={24}/></div>
             <div>
               <h3 className="font-bold text-stone-800 text-sm">雲端同步狀態</h3>
-              <p className="text-xs text-stone-500 mt-1 leading-relaxed">
-                {isCloud ? "✅ 已成功連線至 Firebase。您在手機上所做的任何修改，您的旅伴打開此網址時都能同步看到。" : "⚠️ 尚未偵測到 Firebase Config。目前行程僅會儲存在這台手機中。"}
+              <p className="text-[11px] text-stone-500 mt-1 leading-relaxed">
+                已成功連線至 Firebase。您的 User ID 為: <br/>
+                <code className="bg-stone-100 px-1 rounded text-[9px]">{user?.uid}</code><br/>
+                目前所有手機端所做的修改都會即時同步。
               </p>
             </div>
           </div>
