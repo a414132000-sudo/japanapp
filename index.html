@@ -3,11 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Fukuoka Trip App</title>
-  <!-- 預先連線加速 CDN -->
-  <link rel="preconnect" href="https://cdn.tailwindcss.com">
-  <link rel="preconnect" href="https://esm.sh">
-  <link rel="preconnect" href="https://unpkg.com">
+  <title>Fukuoka Trip (Cloud Sync)</title>
   
   <script src="https://cdn.tailwindcss.com"></script>
   <script type="importmap">
@@ -15,81 +11,81 @@
       "imports": {
         "react": "https://esm.sh/react@18.2.0",
         "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
-        "lucide-react": "https://esm.sh/lucide-react@0.263.1"
+        "lucide-react": "https://esm.sh/lucide-react@0.263.1",
+        "firebase/app": "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js",
+        "firebase/auth": "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js",
+        "firebase/firestore": "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js"
       }
     }
   </script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
   <style>
     .no-scrollbar::-webkit-scrollbar { display: none; }
     .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
     .safe-area-bottom { padding-bottom: env(safe-area-inset-bottom); }
-    /* 防止選取文字干擾操作 */
-    body { -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
+    body { -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; background-color: #f5f5f4; font-family: sans-serif; }
+    .sync-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
   </style>
 </head>
-<body class="bg-stone-50 text-stone-800">
-  <!-- 啟動畫面：在 React 載入前顯示，解決白屏問題 -->
-  <div id="root" class="min-h-screen">
+<body>
+  <div id="root">
     <div class="fixed inset-0 flex flex-col items-center justify-center bg-stone-50 z-50">
-      <div class="h-12 w-12 animate-spin rounded-full border-4 border-stone-200 border-t-indigo-600"></div>
-      <p class="mt-4 text-stone-400 font-bold animate-pulse text-sm">App 載入中...</p>
+      <div class="h-10 w-10 animate-spin rounded-full border-4 border-stone-200 border-t-indigo-600"></div>
+      <p class="mt-4 text-stone-400 font-bold animate-pulse text-xs">正在啟動雲端同步系統...</p>
     </div>
   </div>
 
   <script type="text/babel" data-type="module">
     import React, { useState, useEffect, useRef } from 'react';
     import { createRoot } from 'react-dom/client';
+    import { initializeApp } from 'firebase/app';
+    import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+    import { getFirestore, doc, onSnapshot, setDoc, collection } from 'firebase/firestore';
     import { 
-      MapPin, Wallet, Info, Plus, Trash2, ArrowUp, ArrowDown, Navigation, Phone, 
+      MapPin, Wallet, Info, Plus, Trash2, ArrowUp, ArrowDown, Navigation, 
       Home, Plane, Utensils, ShoppingBag, Train, Camera, Edit2, Map as MapIcon, 
       List, Search, X, Check, AlertCircle, Key, Loader2, RotateCw, Footprints, 
-      Car, Bus, BedDouble, Share2, Star, ExternalLink
+      Car, Bus, BedDouble, Share2, Star, Cloud, CloudOff, RefreshCw
     } from 'lucide-react';
 
-    // --- Google Maps 載入器 (Singleton 極速版) ---
-    let googleMapsPromise = null;
+    // --- 🔥 設定區 🔥 ---
+    // 請在下方貼上你從 Firebase 取得的 config
+    const firebaseConfig = {
+      apiKey: "AIzaSyBkoHeoub3Q9MsQhwIrdr9xrlPSHQ2HxfY",
+      authDomain: "japantrip-e7bcd.firebaseapp.com",
+      projectId: "japantrip-e7bcd",
+      storageBucket: "japantrip-e7bcd.firebasestorage.app",
+      messagingSenderId: "952651606596",
+      appId: "1:952651606596:web:8d50f4e5d9ab47d9556a11",
+      measurementId: "G-TZYLC85XGX"
+    };
 
+    const appId = "fukuoka-2026-v1"; // 固定專案 ID
+
+    // 初始化 Firebase
+    const isCloudEnabled = !!firebaseConfig.apiKey;
+    const app = isCloudEnabled ? initializeApp(firebaseConfig) : null;
+    const auth = isCloudEnabled ? getAuth(app) : null;
+    const db = isCloudEnabled ? getFirestore(app) : null;
+
+    // --- Google Maps 載入器 (Singleton) ---
+    let googleMapsPromise = null;
     const loadGoogleMapsScript = (apiKey) => {
       if (!apiKey) return Promise.reject(new Error("No API Key"));
-      
-      // 1. 如果全域變數已經存在，直接回傳 (0秒延遲)
-      if (window.google && window.google.maps) {
-        return Promise.resolve(window.google.maps);
-      }
-
-      // 2. 如果已經在載入中，回傳同一個 Promise
+      if (window.google && window.google.maps) return Promise.resolve(window.google.maps);
       if (googleMapsPromise) return googleMapsPromise;
 
-      // 3. 建立新的載入請求
       googleMapsPromise = new Promise((resolve, reject) => {
-        if (document.getElementById('google-maps-script')) {
-           const checkInterval = setInterval(() => {
-             if (window.google && window.google.maps) {
-               clearInterval(checkInterval);
-               resolve(window.google.maps);
-             }
-           }, 100);
-           return;
-        }
-
         const script = document.createElement('script');
         script.id = 'google-maps-script';
-        // 載入 places, marker (新版必備)
         script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places,marker,geometry&language=zh-TW&v=weekly`;
         script.async = true;
         script.defer = true;
-        script.onload = () => {
-          if (window.google && window.google.maps) resolve(window.google.maps);
-          else reject(new Error("Google Maps load failed"));
-        };
-        script.onerror = () => {
-          googleMapsPromise = null;
-          reject(new Error("Google Maps Script Error"));
-        };
+        script.onload = () => resolve(window.google.maps);
+        script.onerror = () => { googleMapsPromise = null; reject(new Error("Google Maps Script Error")); };
         document.head.appendChild(script);
       });
-
       return googleMapsPromise;
     };
 
@@ -97,450 +93,11 @@
       const startDate = new Date('2026-02-26');
       const targetDate = new Date(startDate);
       targetDate.setDate(startDate.getDate() + (dayIndex - 1));
-      const month = targetDate.getMonth() + 1;
-      const date = targetDate.getDate();
       const dayOfWeek = ['日', '一', '二', '三', '四', '五', '六'][targetDate.getDay()];
-      return `${month}/${date} (${dayOfWeek})`;
+      return `${targetDate.getMonth() + 1}/${targetDate.getDate()} (${dayOfWeek})`;
     };
 
-    // --- Modal ---
-    const DeleteConfirmModal = ({ isOpen, onClose, onConfirm, itemName }) => {
-      if (!isOpen) return null;
-      return (
-        <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm">
-          <div className="bg-white w-full max-w-xs rounded-3xl p-6 shadow-2xl animate-in fade-in zoom-in-95 duration-200">
-            <div className="flex flex-col items-center text-center">
-              <div className="w-14 h-14 bg-red-100 text-red-500 rounded-full flex items-center justify-center mb-4"><AlertCircle size={28} /></div>
-              <h3 className="font-bold text-xl text-stone-800 mb-2">確定要移除嗎？</h3>
-              <p className="text-stone-500 text-sm mb-6 leading-relaxed">即將移除「<span className="font-bold text-stone-700">{itemName}</span>」<br/>此動作無法復原。</p>
-              <div className="flex gap-3 w-full">
-                <button onClick={onClose} className="flex-1 py-3 bg-stone-100 text-stone-600 font-bold rounded-xl active:bg-stone-200 transition-colors">取消</button>
-                <button onClick={onConfirm} className="flex-1 py-3 bg-red-500 text-white font-bold rounded-xl active:bg-red-600 shadow-lg shadow-red-100 transition-colors">移除</button>
-              </div>
-            </div>
-          </div>
-        </div>
-      );
-    };
-
-    const RouteInfo = ({ data }) => {
-      if (!data) return <div className="flex justify-center py-2"><div className="w-0.5 h-6 bg-stone-200"></div></div>;
-      const getIcon = () => {
-        if (data.mode === 'WALKING') return <Footprints size={12} />;
-        if (data.mode === 'DRIVING') return <Car size={12} />;
-        return <Bus size={12} />;
-      };
-      return (
-        <div className="flex flex-col items-center py-1 relative z-0">
-          <div className="w-0.5 h-3 bg-stone-200 mb-1"></div>
-          <div className="bg-stone-100 border border-stone-200 rounded-full px-3 py-1 flex items-center gap-2 text-xs font-medium text-stone-500 shadow-sm">{getIcon()}<span>{data.duration}</span><span className="text-stone-300">|</span><span>{data.distance}</span></div>
-          <div className="w-0.5 h-3 bg-stone-200 mt-1"></div>
-        </div>
-      );
-    };
-
-    // --- Google Map View (使用 AdvancedMarkerElement) ---
-    const GoogleMapView = ({ locations, apiKey, onAuthError }) => {
-      const mapRef = useRef(null);
-      const mapInstanceRef = useRef(null);
-      const markersRef = useRef([]);
-
-      useEffect(() => {
-        window.gm_authFailure = () => { 
-            console.error("Google Maps Auth Failure Triggered");
-            if (onAuthError) onAuthError(); 
-        };
-        
-        if (!apiKey) return;
-        
-        const initMap = async () => {
-            try {
-                const googleMaps = await loadGoogleMapsScript(apiKey);
-                const { Map } = await google.maps.importLibrary("maps");
-                const { AdvancedMarkerElement, PinElement } = await google.maps.importLibrary("marker");
-
-                if (!mapRef.current) return;
-                
-                if (!mapInstanceRef.current) {
-                    mapInstanceRef.current = new Map(mapRef.current, {
-                    center: { lat: 33.5902, lng: 130.4220 },
-                    zoom: 13,
-                    mapId: 'DEMO_MAP_ID', // 必須有 Map ID 才能用 Advanced Marker (DEMO 即可)
-                    disableDefaultUI: false,
-                    zoomControl: true,
-                    gestureHandling: 'greedy' 
-                    });
-                }
-                
-                // 清除舊標記
-                markersRef.current.forEach(m => m.map = null);
-                markersRef.current = [];
-                
-                const bounds = new google.maps.LatLngBounds();
-                
-                locations.forEach((loc, index) => {
-                    const position = { lat: loc.lat, lng: loc.lng };
-                    
-                    // 建立自定義 Pin (序號)
-                    const pin = new PinElement({
-                        glyph: (index + 1).toString(),
-                        background: '#d32f2f',
-                        borderColor: '#b71c1c',
-                        glyphColor: 'white',
-                    });
-
-                    const marker = new AdvancedMarkerElement({
-                        map: mapInstanceRef.current,
-                        position: position,
-                        title: loc.name,
-                        content: pin.element
-                    });
-
-                    // Info Window
-                    const infoWindow = new google.maps.InfoWindow({
-                         content: `
-                            <div style="font-family: sans-serif; padding: 4px;">
-                                <strong style="font-size: 14px;">${loc.name}</strong><br>
-                                <span style="font-size: 12px; color: #555;">${loc.desc}</span><br>
-                                <a href="https://www.google.com/maps/search/?api=1&query=${loc.lat},${loc.lng}&query_place_id=${loc.placeId || ''}" target="_blank" style="color: #2563eb; text-decoration: underline; font-size: 12px; margin-top: 4px; display: inline-block;">在 Google Maps 開啟</a>
-                            </div>
-                        `
-                    });
-
-                    marker.addListener('click', () => {
-                        infoWindow.open({
-                            anchor: marker,
-                            map: mapInstanceRef.current,
-                        });
-                    });
-
-                    markersRef.current.push(marker);
-                    bounds.extend(position);
-                });
-
-                if (locations.length > 0) mapInstanceRef.current.fitBounds(bounds);
-            } catch (e) {
-                console.error("Map render error", e);
-            }
-        };
-
-        initMap();
-      }, [locations, apiKey]);
-
-      if (!apiKey) return <div className="w-full h-64 flex items-center justify-center bg-stone-100 text-stone-400 border-2 border-dashed rounded-2xl"><Key size={32} className="mr-2"/>請輸入 API Key</div>;
-
-      return <div ref={mapRef} className="w-full h-[60vh] rounded-2xl overflow-hidden shadow-inner border border-stone-200 bg-stone-100" />;
-    };
-
-    // --- SearchBar (升級版: 使用 New Places API) ---
-    const SearchBar = ({ onAdd, apiKey }) => {
-      const [query, setQuery] = useState('');
-      const [results, setResults] = useState([]);
-      const [loading, setLoading] = useState(false);
-      const [isReady, setIsReady] = useState(false);
-      const [errorMsg, setErrorMsg] = useState('');
-
-      useEffect(() => {
-        if (!apiKey) return;
-        const checkGoogle = setInterval(() => {
-            if (window.google && window.google.maps) {
-                setIsReady(true);
-                clearInterval(checkGoogle);
-            }
-        }, 100); 
-        return () => clearInterval(checkGoogle);
-      }, [apiKey]);
-
-      const handleSearch = async () => {
-        if (!query) return;
-        setLoading(true);
-        setErrorMsg('');
-
-        try {
-            // 使用新版 Places Library (Dynamic Import)
-            const { Place } = await google.maps.importLibrary("places");
-            
-            // 執行文字搜尋 (Text Search) - 新版 API
-            const { places } = await Place.searchByText({
-                textQuery: query,
-                fields: ['displayName', 'location', 'formattedAddress', 'rating', 'userRatingCount', 'id'],
-                locationBias: { lat: 33.59, lng: 130.42 }, // 稍微偏好福岡座標 (選填)
-            });
-
-            if (places && places.length > 0) {
-                setResults(places);
-            } else {
-                setErrorMsg('搜尋無結果');
-                setResults([]);
-            }
-        } catch (e) {
-            console.error("Search failed", e);
-            setErrorMsg(`搜尋失敗: ${e.message}`);
-            setResults([]);
-        } finally {
-            setLoading(false);
-        }
-      };
-
-      const handleSelectPlace = (place) => {
-        // 從新版 Place 物件轉成 App 格式
-        // 注意：新版 API 直接回傳 Place 物件，部分屬性名稱不同
-        onAdd({
-          id: Date.now(),
-          type: 'spot',
-          name: place.displayName,
-          lat: place.location.lat(),
-          lng: place.location.lng(),
-          desc: place.formattedAddress || '',
-          placeId: place.id,
-          note: '',
-          time: '',
-          rating: place.rating, 
-          user_ratings_total: place.userRatingCount 
-        });
-        setQuery('');
-        setResults([]);
-      };
-
-      return (
-        <div className="relative mb-4">
-          <div className="flex gap-2">
-            <div className="flex-1 relative">
-              <input 
-                className="w-full bg-white border border-stone-200 rounded-2xl pl-10 pr-4 py-4 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20 shadow-sm disabled:bg-stone-50 disabled:text-stone-400"
-                placeholder={isReady ? "搜尋景點 (如：佐賀機場)" : "連線地圖中..."}
-                value={query}
-                onChange={e => setQuery(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && handleSearch()}
-                disabled={!isReady}
-              />
-              {isReady ? <Search size={20} className="absolute left-3 top-4 text-stone-400" /> : <Loader2 size={20} className="absolute left-3 top-4 text-stone-300 animate-spin" />}
-            </div>
-            <button onClick={handleSearch} disabled={!isReady} className={`w-14 rounded-2xl flex items-center justify-center shadow-lg active:scale-95 transition-transform ${isReady ? 'bg-indigo-900 text-white' : 'bg-stone-200 text-stone-400'}`}>
-              {loading ? <Loader2 size={20} className="animate-spin" /> : <Plus size={24} />}
-            </button>
-          </div>
-          {errorMsg && <div className="mt-2 text-[10px] text-red-500 font-bold px-2">{errorMsg}</div>}
-          {results.length > 0 && (
-            <div className="absolute top-full left-0 right-0 mt-2 bg-white rounded-2xl shadow-xl border z-50 max-h-60 overflow-y-auto">
-              {results.map((p, i) => (
-                <button key={i} onClick={() => handleSelectPlace(p)} className="w-full text-left p-4 hover:bg-stone-50 border-b last:border-none">
-                  <div className="font-bold text-sm text-stone-800">{p.displayName}</div>
-                  <div className="flex items-center gap-1 mt-1">
-                    {p.rating && <span className="text-[10px] bg-yellow-100 text-yellow-700 px-1 rounded flex items-center gap-0.5"><Star size={8} fill="currentColor"/> {p.rating}</span>}
-                    <div className="text-[10px] text-stone-400 truncate">{p.formattedAddress}</div>
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      );
-    };
-
-    // --- ItineraryCard ---
-    const ItineraryCard = ({ item, index, total, isEditing, onRequestDelete, onUpdate, onMove }) => {
-      const analyzeTags = (text) => {
-        if (!text) return [];
-        if (text.includes('必吃')) return [{label:'必吃', color:'bg-orange-100 text-orange-700'}];
-        if (text.includes('必買')) return [{label:'必買', color:'bg-pink-100 text-pink-700'}];
-        if (text.includes('預約')) return [{label:'預約', color:'bg-blue-100 text-blue-700'}];
-        return [];
-      };
-      
-      const getIcon = (type) => {
-        switch(type) {
-          case 'food': return <Utensils size={18} className="text-orange-500" />;
-          case 'shop': return <ShoppingBag size={18} className="text-pink-500" />;
-          case 'transport': return <Train size={18} className="text-emerald-500" />;
-          default: return <Camera size={18} className="text-indigo-500" />;
-        }
-      };
-
-      const tags = analyzeTags(item.note);
-
-      return (
-        <div className={`bg-white rounded-2xl p-4 mb-3 shadow-sm border border-stone-100 transition-all relative ${isEditing ? 'border-l-4 border-l-blue-400' : ''}`}>
-          <div className="flex items-start gap-3">
-            {isEditing ? (
-              <div className="flex flex-col gap-1 mt-1">
-                <button onClick={() => onMove(index, -1)} disabled={index === 0} className="p-1 bg-stone-100 rounded text-stone-500 disabled:opacity-30 active:bg-blue-100 active:text-blue-600"><ArrowUp size={16} /></button>
-                <button onClick={() => onMove(index, 1)} disabled={index === total - 1} className="p-1 bg-stone-100 rounded text-stone-500 disabled:opacity-30 active:bg-blue-100 active:text-blue-600"><ArrowDown size={16} /></button>
-              </div>
-            ) : (
-              <div className="flex flex-col items-center gap-1 shrink-0 mt-1">
-                 <div className="w-6 h-6 bg-indigo-900 text-white rounded-full flex items-center justify-center text-[10px] font-bold shadow-sm">{index + 1}</div>
-                {item.time && <div className="text-[10px] font-mono font-bold text-stone-500 bg-stone-50 px-1 rounded border border-stone-100">{item.time}</div>}
-              </div>
-            )}
-
-            <div className="mt-1 p-2 bg-stone-50 rounded-full shrink-0">{getIcon(item.type)}</div>
-            
-            <div className="flex-1 min-w-0">
-              <div className="flex justify-between items-start">
-                <div className="w-full">
-                  <div className="flex items-center gap-2 mb-0.5">
-                    <h3 className="font-bold text-stone-800 text-lg leading-tight truncate">{item.name}</h3>
-                    {isEditing && (
-                      <input type="time" className="bg-stone-100 text-[10px] px-1 rounded border border-stone-200 text-stone-600" value={item.time || ''} onChange={(e) => onUpdate(index, 'time', e.target.value)} />
-                    )}
-                  </div>
-                  {/* 顯示評價與地址 */}
-                  <div className="flex items-center gap-2 mb-1">
-                    {item.rating && <span className="text-[10px] bg-yellow-50 text-yellow-600 px-1 rounded flex items-center gap-0.5 font-medium"><Star size={8} fill="currentColor"/> {item.rating}</span>}
-                    <p className="text-stone-400 text-xs truncate flex-1">{item.desc}</p>
-                  </div>
-                </div>
-                {isEditing ? (
-                  <button onClick={() => onRequestDelete(index)} className="p-2 bg-red-50 text-red-500 rounded-full shrink-0 ml-2"><Trash2 size={18} /></button>
-                ) : (
-                  <a href={`https://www.google.com/maps/search/?api=1&query=${item.lat},${item.lng}`} target="_blank" className="p-2 bg-blue-50 text-blue-600 rounded-full shrink-0 ml-2"><Navigation size={18} /></a>
-                )}
-              </div>
-              <div className="mt-2 relative">
-                <input type="text" className="w-full bg-stone-50 rounded-xl px-3 py-2 text-xs text-stone-600 border border-stone-100 focus:bg-white focus:border-indigo-200 transition-all outline-none" placeholder="輸入行程筆記..." value={item.note || ''} onChange={(e) => onUpdate(index, 'note', e.target.value)} />
-              </div>
-              {tags.length > 0 && <div className="flex gap-1 mt-2">{tags.map((t,i) => <span key={i} className={`text-[10px] px-1.5 py-0.5 rounded border ${t.color}`}>{t.label}</span>)}</div>}
-            </div>
-          </div>
-        </div>
-      );
-    };
-
-    // --- WalletTab ---
-    const WalletTab = () => {
-      const [items, setItems] = useState([]);
-      const [newItem, setNewItem] = useState({ name: '', cost: '', category: 'food' });
-      const [editingId, setEditingId] = useState(null);
-      const [editForm, setEditForm] = useState({});
-      const [deleteModalOpen, setDeleteModalOpen] = useState(false);
-      const [deleteTargetId, setDeleteTargetId] = useState(null);
-      const [budget, setBudget] = useState(() => parseInt(localStorage.getItem('trip_budget')) || 100000);
-      const [isEditingBudget, setIsEditingBudget] = useState(false);
-
-      useEffect(() => { const saved = localStorage.getItem('wallet_data'); if (saved) setItems(JSON.parse(saved)); }, []);
-      const saveToLocal = (data) => { setItems(data); localStorage.setItem('wallet_data', JSON.stringify(data)); };
-      const handleAdd = (e) => { e.preventDefault(); if (!newItem.name || !newItem.cost) return; const item = { ...newItem, id: Date.now(), cost: parseInt(newItem.cost) }; saveToLocal([item, ...items]); setNewItem({ name: '', cost: '', category: 'food' }); };
-      const startEdit = (item) => { setEditingId(item.id); setEditForm({ ...item }); };
-      const saveEdit = () => { const updatedItems = items.map(item => item.id === editingId ? { ...editForm, cost: parseInt(editForm.cost) } : item); saveToLocal(updatedItems); setEditingId(null); };
-      const handleRequestDelete = (id) => { setDeleteTargetId(id); setDeleteModalOpen(true); };
-      const handleConfirmDelete = () => { if (deleteTargetId !== null) { saveToLocal(items.filter(item => item.id !== deleteTargetId)); setDeleteModalOpen(false); setDeleteTargetId(null); }};
-      const total = items.reduce((sum, item) => sum + item.cost, 0);
-      const categoryTotals = items.reduce((acc, item) => { acc[item.category] = (acc[item.category] || 0) + item.cost; return acc; }, { food: 0, shop: 0, trans: 0, hotel: 0 });
-      const budgetPercent = Math.min((total / budget) * 100, 100);
-      const isOverBudget = total > budget;
-
-      return (
-        <div className="p-4 pb-24">
-          <div className="bg-indigo-900 text-white p-6 rounded-2xl shadow-lg mb-6 relative overflow-hidden">
-            <div className="relative z-10">
-              <div className="flex justify-between items-end mb-2">
-                <p className="text-indigo-200 text-sm">目前總花費</p>
-                {isEditingBudget ? (
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-indigo-300">預算:</span>
-                    <input type="number" value={budget} onChange={(e) => {setBudget(e.target.value); localStorage.setItem('trip_budget', e.target.value);}} className="w-24 bg-indigo-800 border border-indigo-600 rounded px-1 text-right font-mono text-sm outline-none text-white" />
-                    <button onClick={() => setIsEditingBudget(false)} className="text-xs bg-indigo-700 px-2 py-1 rounded">OK</button>
-                  </div>
-                ) : (
-                  <button onClick={() => setIsEditingBudget(true)} className="text-xs text-indigo-300 hover:text-white flex items-center gap-1">預算: ¥{parseInt(budget).toLocaleString()} <Edit2 size={10} /></button>
-                )}
-              </div>
-              <h2 className="text-4xl font-bold font-mono">¥ {total.toLocaleString()}</h2>
-              <div className="mt-4 flex justify-between text-xs opacity-70"><span>約 NT$ {Math.round(total * 0.21).toLocaleString()}</span><span>{isOverBudget ? '⚠️ 已超支' : `剩餘: ¥ ${(budget - total).toLocaleString()}`}</span></div>
-              <div className="mt-3 w-full h-2 bg-indigo-800 rounded-full overflow-hidden"><div className={`h-full transition-all duration-500 ${isOverBudget ? 'bg-red-500' : 'bg-green-400'}`} style={{ width: `${budgetPercent}%` }} /></div>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3 mb-6">
-            <div className="bg-orange-50 p-3 rounded-xl border border-orange-100 flex flex-col"><div className="text-xs text-orange-600 font-bold mb-1 flex items-center gap-1"><Utensils size={12}/> 飲食</div><div className="font-mono font-bold text-stone-700">¥ {categoryTotals.food.toLocaleString()}</div></div>
-            <div className="bg-pink-50 p-3 rounded-xl border border-pink-100 flex flex-col"><div className="text-xs text-pink-600 font-bold mb-1 flex items-center gap-1"><ShoppingBag size={12}/> 購物</div><div className="font-mono font-bold text-stone-700">¥ {categoryTotals.shop.toLocaleString()}</div></div>
-            <div className="bg-emerald-50 p-3 rounded-xl border border-emerald-100 flex flex-col"><div className="text-xs text-emerald-600 font-bold mb-1 flex items-center gap-1"><Train size={12}/> 交通</div><div className="font-mono font-bold text-stone-700">¥ {categoryTotals.trans.toLocaleString()}</div></div>
-            <div className="bg-blue-50 p-3 rounded-xl border border-blue-100 flex flex-col"><div className="text-xs text-blue-600 font-bold mb-1 flex items-center gap-1"><BedDouble size={12}/> 住宿</div><div className="font-mono font-bold text-stone-700">¥ {categoryTotals.hotel.toLocaleString()}</div></div>
-          </div>
-
-          <form onSubmit={handleAdd} className="bg-white p-4 rounded-xl shadow-sm border border-stone-100 mb-6">
-            <h3 className="font-bold text-stone-700 mb-3 flex items-center gap-2"><Plus size={16} /> 新增消費</h3>
-            <div className="flex gap-2 mb-2">
-              <input type="text" placeholder="品項" className="flex-1 bg-stone-50 border border-stone-200 rounded-lg p-2 text-sm outline-none" value={newItem.name} onChange={e => setNewItem({...newItem, name: e.target.value})} />
-              <select className="bg-stone-50 border border-stone-200 rounded-lg p-2 text-sm outline-none" value={newItem.category} onChange={e => setNewItem({...newItem, category: e.target.value})}>
-                <option value="food">飲食</option><option value="shop">購物</option><option value="trans">交通</option><option value="hotel">住宿</option>
-              </select>
-            </div>
-            <div className="flex gap-2">
-              <input type="number" placeholder="JPY" className="flex-1 bg-stone-50 border border-stone-200 rounded-lg p-2 text-sm font-mono" value={newItem.cost} onChange={e => setNewItem({...newItem, cost: e.target.value})} />
-              <button type="submit" className="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-bold">新增</button>
-            </div>
-          </form>
-
-          <div className="space-y-2">
-            {items.map(item => (
-              <div key={item.id} className="bg-white p-3 rounded-lg border border-stone-100">
-                {editingId === item.id ? (
-                  <div className="flex flex-col gap-2">
-                    <div className="flex gap-2"><input className="flex-1 border rounded p-2 text-sm" value={editForm.name} onChange={e => setEditForm({...editForm, name: e.target.value})} /><select className="border rounded p-2 text-sm" value={editForm.category} onChange={e => setEditForm({...editForm, category: e.target.value})}><option value="food">飲食</option><option value="shop">購物</option><option value="trans">交通</option><option value="hotel">住宿</option></select></div>
-                    <div className="flex gap-2"><input type="number" className="flex-1 border rounded p-2 text-sm font-mono" value={editForm.cost} onChange={e => setEditForm({...editForm, cost: e.target.value})} /><button onClick={saveEdit} className="bg-green-600 text-white px-3 rounded text-sm">儲存</button><button onClick={() => setEditingId(null)} className="bg-stone-200 text-stone-600 px-3 rounded text-sm">取消</button></div>
-                  </div>
-                ) : (
-                  <div className="flex justify-between items-center">
-                    <div className="flex items-center gap-3"><div className={`w-2 h-2 rounded-full ${item.category === 'food' ? 'bg-orange-400' : item.category === 'shop' ? 'bg-pink-400' : item.category === 'trans' ? 'bg-emerald-400' : 'bg-blue-400'}`} /><span className="text-stone-700 font-medium truncate max-w-[120px]">{item.name}</span></div>
-                    <div className="flex items-center gap-3"><span className="font-mono font-bold text-stone-800">¥ {item.cost.toLocaleString()}</span><div className="flex gap-1"><button onClick={() => startEdit(item)} className="p-2 text-stone-400 hover:text-blue-500 rounded"><Edit2 size={14} /></button><button onClick={() => handleRequestDelete(item.id)} className="p-2 text-stone-400 hover:text-red-500 rounded"><Trash2 size={14} /></button></div></div>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-          <DeleteConfirmModal isOpen={deleteModalOpen} onClose={() => setDeleteModalOpen(false)} onConfirm={handleConfirmDelete} itemName={items.find(i => i.id === deleteTargetId)?.name || '這筆消費'} />
-        </div>
-      );
-    };
-
-    // --- InfoTab ---
-    const InfoTab = ({ apiKey, setApiKey }) => {
-      const [flight, setFlight] = useState(() => {
-        const saved = localStorage.getItem('trip_flight');
-        return saved ? JSON.parse(saved) : { to: 'JX840 (07:30 TPE -> 10:45 FUK)', back: 'JX841 (12:00 FUK -> 13:50 TPE)' };
-      });
-      
-      const [inputKey, setInputKey] = useState(apiKey);
-      const [saveStatus, setSaveStatus] = useState('idle');
-
-      useEffect(() => { setInputKey(apiKey); }, [apiKey]);
-
-      const handleSaveKey = () => {
-        setSaveStatus('saving');
-        setTimeout(() => { setApiKey(inputKey); setSaveStatus('saved'); setTimeout(() => setSaveStatus('idle'), 2000); }, 500);
-      };
-
-      const updateFlight = (newFlight) => { setFlight(newFlight); localStorage.setItem('trip_flight', JSON.stringify(newFlight)); };
-
-      return (
-        <div className="p-4 pb-24 space-y-4">
-          <div className="bg-indigo-50 p-5 rounded-xl border border-indigo-100">
-            <h3 className="font-bold text-indigo-900 mb-3 flex items-center gap-2"><Key size={18} /> Google Maps 設定</h3>
-            <p className="text-xs text-indigo-700 mb-3">請輸入 API Key 以啟用完整 Google 地圖功能。<br/>(若地圖顯示異常，請按「重新整理」)</p>
-            <div className="flex gap-2"><input type="text" value={inputKey} onChange={(e) => setInputKey(e.target.value)} placeholder="貼上 API Key" className="flex-1 p-2 text-sm border rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 font-mono" /><button onClick={handleSaveKey} disabled={saveStatus === 'saving'} className={`px-4 rounded-lg font-bold text-white transition-all flex items-center gap-1 min-w-[80px] justify-center ${saveStatus === 'saved' ? 'bg-green-600' : 'bg-indigo-600 hover:bg-indigo-700'}`}>{saveStatus === 'saving' && <Loader2 size={16} className="animate-spin" />}{saveStatus === 'saved' && <Check size={16} />}{saveStatus === 'idle' && '儲存'}</button></div>
-            {saveStatus === 'saved' && <div className="mt-3 flex items-start gap-2 bg-indigo-100 p-2 rounded-lg text-xs text-indigo-800"><Info size={14} className="shrink-0 mt-0.5" /><div className="flex-1">為了確保新金鑰生效，建議重新整理網頁。</div><button onClick={() => window.location.reload()} className="bg-white border border-indigo-200 px-2 py-0.5 rounded text-indigo-700 hover:bg-indigo-50 flex items-center gap-1 font-bold whitespace-nowrap"><RotateCw size={10} /> 重新整理</button></div>}
-          </div>
-          <div className="bg-white p-5 rounded-xl shadow-sm border border-stone-100">
-            <h3 className="font-bold text-stone-800 mb-4 flex items-center gap-2"><Plane size={18} className="text-blue-500" /> 航班資訊</h3>
-            <div className="space-y-4">
-              <div className="relative pl-4 border-l-2 border-blue-200"><label className="text-xs text-stone-400 block mb-1">去程 (2/26)</label><input value={flight.to} onChange={(e) => updateFlight({...flight, to: e.target.value})} className="w-full text-stone-700 font-medium bg-transparent outline-none border-b border-transparent focus:border-blue-300" /></div>
-              <div className="relative pl-4 border-l-2 border-indigo-200"><label className="text-xs text-stone-400 block mb-1">回程 (3/1)</label><input value={flight.back} onChange={(e) => updateFlight({...flight, back: e.target.value})} className="w-full text-stone-700 font-medium bg-transparent outline-none border-b border-transparent focus:border-indigo-300" /></div>
-            </div>
-          </div>
-          <div className="bg-white p-5 rounded-xl shadow-sm border border-stone-100">
-            <h3 className="font-bold text-stone-800 mb-4 flex items-center gap-2"><Home size={18} className="text-orange-500" /> 住宿資訊</h3>
-            <div className="bg-stone-50 p-3 rounded-lg mb-2">
-              <p className="font-bold text-stone-700">東洋酒店 (Toyo Hotel)</p><p className="text-sm text-stone-500 mt-1">博多站筑紫口步行 2 分鐘</p>
-              <div className="mt-2 flex gap-2"><span className="text-xs bg-white border border-stone-200 px-2 py-1 rounded">Check-in: 15:00</span><a href="https://www.google.com/maps/search/?api=1&query=東洋酒店 博多" target="_blank" className="text-xs bg-blue-50 text-blue-600 border border-blue-100 px-2 py-1 rounded flex items-center gap-1">導航 <Navigation size={10} /></a></div>
-            </div>
-          </div>
-        </div>
-      );
-    };
-
-    // --- App ---
+    // --- App 主程式 ---
     function App() {
       const [activeTab, setActiveTab] = useState('itinerary');
       const [activeDay, setActiveDay] = useState(1);
@@ -548,74 +105,90 @@
       const [isEditing, setIsEditing] = useState(false);
       const [viewMode, setViewMode] = useState('list');
       const [apiKey, setApiKey] = useState(() => localStorage.getItem('google_maps_key') || '');
-      const [authError, setAuthError] = useState(false);
-      const [deleteModal, setDeleteModal] = useState({ open: false, index: null });
-      const [routeInfos, setRouteInfos] = useState({});
-      const [calculatingRoutes, setCalculatingRoutes] = useState(false);
+      const [user, setUser] = useState(null);
+      const [syncStatus, setSyncStatus] = useState('local'); // local, syncing, success
 
-      useEffect(() => { localStorage.setItem('google_maps_key', apiKey); if (apiKey) { setAuthError(false); loadGoogleMapsScript(apiKey); } }, [apiKey]);
+      // 1. 匿名登入 (為了與朋友共用資料)
+      useEffect(() => {
+        if (!isCloudEnabled) return;
+        const initAuth = async () => {
+          try {
+            await signInAnonymously(auth);
+          } catch (e) { console.error("Firebase Auth Error", e); }
+        };
+        initAuth();
+        return onAuthStateChanged(auth, setUser);
+      }, []);
 
-      const defaultDay1 = [
-        { id: 1, type: 'transport', name: "抵達博多車站 (筑紫口)", lat: 33.5902, lng: 130.4220, desc: "14:15 JR 特急抵達", note: "記得在車上吃完佐賀牛便當", time: "14:15" },
-        { id: 2, type: 'hotel', name: "東洋酒店 Check-in", lat: 33.5908, lng: 130.4238, desc: "放行李、整理裝備", note: "15:00 可進房，確認 Wifi", time: "14:30" },
-        { id: 3, type: 'shop', name: "Yodobashi Camera", lat: 33.5895, lng: 130.4235, desc: "音響試聽 / 3C 補給", note: "Edifier S1000MKII 比價, 必買", time: "15:00" },
-        { id: 4, type: 'spot', name: "承天寺 (洗濤庭)", lat: 33.5938, lng: 130.4182, desc: "感受枯山水與靜謐", note: "拍照安靜", time: "16:00" },
-        { id: 5, type: 'spot', name: "博多運河城", lat: 33.5898, lng: 130.4105, desc: "建築巡禮 & Francfranc", note: "必逛 Francfranc 2F", time: "17:00" },
-        { id: 6, type: 'food', name: "中洲屋台 (一龍拉麵)", lat: 33.5915, lng: 130.4075, desc: "福岡靈魂宵夜體驗", note: "必吃 關東煮, 記得帶現金", time: "19:00" }
-      ];
-
-      useEffect(() => { const key = `trip_day${activeDay}`; const saved = localStorage.getItem(key); setLocations(saved ? JSON.parse(saved) : (activeDay === 1 ? defaultDay1 : [])); setRouteInfos({}); }, [activeDay]);
-      const saveLocs = (newData) => { setLocations(newData); localStorage.setItem(`trip_day${activeDay}`, JSON.stringify(newData)); setRouteInfos({}); };
-      const handleUpdate = (index, field, value) => { const c = [...locations]; c[index][field]=value; saveLocs(c); };
-      const handleMove = (idx, dir) => { const c = [...locations]; const t = idx + dir; if(t<0||t>=c.length)return; [c[idx],c[t]]=[c[t],c[idx]]; saveLocs(c); };
-      const getGoogleMapsRoute = () => { if (locations.length === 0) return '#'; const o = `${locations[0].lat},${locations[0].lng}`; const d = `${locations[locations.length-1].lat},${locations[locations.length-1].lng}`; const w = locations.slice(1, -1).map(l => `${l.lat},${l.lng}`).join('|'); return `https://www.google.com/maps/dir/?api=1&origin=${o}&destination=${d}&waypoints=${w}&travelmode=walking`; };
-      
-      const calculateRoutes = async () => {
-        if (!apiKey || locations.length < 2) return;
-        setCalculatingRoutes(true);
-        const googleMaps = await loadGoogleMapsScript(apiKey);
-        const directionsService = new googleMaps.DirectionsService();
-        const newRouteInfos = {};
-        const promises = [];
-        for (let i = 0; i < locations.length - 1; i++) {
-          const origin = { lat: locations[i].lat, lng: locations[i].lng };
-          const dest = { lat: locations[i + 1].lat, lng: locations[i + 1].lng };
-          promises.push(new Promise(resolve => {
-            setTimeout(() => {
-              const R = 6371e3; const φ1 = origin.lat * Math.PI/180; const φ2 = dest.lat * Math.PI/180;
-              const Δφ = (dest.lat-origin.lat) * Math.PI/180; const Δλ = (dest.lng-origin.lng) * Math.PI/180;
-              const a = Math.sin(Δφ/2) * Math.sin(Δφ/2) + Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ/2) * Math.sin(Δλ/2);
-              const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-              const distM = R * c;
-              const travelMode = distM > 2000 ? googleMaps.TravelMode.DRIVING : googleMaps.TravelMode.WALKING;
-              directionsService.route({ origin, destination: dest, travelMode }, (res, status) => {
-                if (status === 'OK') resolve({ index: i, data: { duration: res.routes[0].legs[0].duration.text, distance: res.routes[0].legs[0].distance.text, mode: travelMode } });
-                else resolve(null);
-              });
-            }, i * 400);
-          }));
+      // 2. 即時資料監聽 (Firestore Real-time Sync)
+      useEffect(() => {
+        let unsubscribe = () => {};
+        if (isCloudEnabled && user) {
+          setSyncStatus('syncing');
+          // 規則路徑：/artifacts/{appId}/public/data/{collectionName}
+          const tripRef = doc(db, 'artifacts', appId, 'public', 'data', `day${activeDay}`);
+          
+          unsubscribe = onSnapshot(tripRef, (docSnap) => {
+            if (docSnap.exists()) {
+              setLocations(docSnap.data().items || []);
+            } else {
+              setLocations([]);
+            }
+            setSyncStatus('success');
+          }, (err) => {
+            console.error("Firestore Listen Error", err);
+            setSyncStatus('local');
+          });
+        } else {
+          const saved = localStorage.getItem(`trip_day${activeDay}`);
+          setLocations(saved ? JSON.parse(saved) : []);
         }
-        const results = await Promise.all(promises);
-        results.forEach(res => { if (res) newRouteInfos[res.index] = res.data; });
-        setRouteInfos(newRouteInfos);
-        setCalculatingRoutes(false);
+        return () => unsubscribe();
+      }, [activeDay, user]);
+
+      // 3. 儲存功能 (自動判斷雲端或本地)
+      const saveLocs = async (newData) => {
+        setLocations(newData);
+        if (isCloudEnabled && user) {
+          setSyncStatus('syncing');
+          try {
+            const tripRef = doc(db, 'artifacts', appId, 'public', 'data', `day${activeDay}`);
+            await setDoc(tripRef, { items: newData, lastUpdated: new Date() });
+            setSyncStatus('success');
+          } catch (e) {
+            console.error("Save Error", e);
+            setSyncStatus('local');
+          }
+        } else {
+          localStorage.setItem(`trip_day${activeDay}`, JSON.stringify(newData));
+        }
       };
 
-      const handleShare = () => { const text = `🇯🇵 福岡之旅 ${getTripDate(activeDay)}\n\n` + locations.map((l, i) => `${i+1}. [${l.time || '--:--'}] ${l.name}`).join('\n'); navigator.clipboard.writeText(text).then(() => alert('已複製行程文字！')); };
-
       return (
-        <div className="max-w-md mx-auto min-h-screen pb-24">
+        <div className="max-w-md mx-auto min-h-screen flex flex-col shadow-2xl bg-stone-50">
           <header className="sticky top-0 z-[60] bg-white/80 backdrop-blur-xl border-b px-4 py-4 flex justify-between items-center shadow-sm">
-            <div className="flex items-center gap-3"><div className="w-10 h-10 bg-indigo-900 rounded-2xl flex items-center justify-center text-white font-black shadow-indigo-100 shadow-lg">福</div><div><h1 className="font-black text-sm tracking-tight">FUKUOKA 2026</h1><p className="text-[10px] text-stone-400 uppercase font-bold tracking-widest">Travel Planner</p></div></div>
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-indigo-900 rounded-2xl flex items-center justify-center text-white font-black shadow-lg">福</div>
+              <div>
+                <h1 className="font-black text-sm tracking-tight">FUKUOKA 2026</h1>
+                <div className="flex items-center gap-1">
+                  <div className={`sync-dot ${syncStatus === 'success' ? 'bg-green-500' : syncStatus === 'syncing' ? 'bg-amber-400 animate-pulse' : 'bg-stone-300'}`}></div>
+                  <p className="text-[9px] font-bold text-stone-400 uppercase tracking-widest">{syncStatus === 'success' ? '雲端同步中' : '本機模式'}</p>
+                </div>
+              </div>
+            </div>
             <div className="flex gap-2">
-              {activeTab === 'itinerary' && (<><button onClick={handleShare} className="p-2.5 bg-stone-50 text-stone-500 rounded-full active:bg-stone-100"><Share2 size={20} /></button><button onClick={() => setIsEditing(!isEditing)} className={`px-4 py-2 rounded-full text-xs font-bold transition-all ${isEditing ? 'bg-indigo-600 text-white shadow-lg' : 'bg-stone-100 text-stone-500'}`}>{isEditing ? <Check size={16} /> : <Edit2 size={16} />}</button></>)}
+              <button onClick={() => setIsEditing(!isEditing)} className={`px-4 py-2 rounded-full text-xs font-bold transition-all ${isEditing ? 'bg-indigo-600 text-white shadow-lg' : 'bg-stone-100 text-stone-500'}`}>
+                {isEditing ? <Check size={16} /> : <Edit2 size={16} />}
+              </button>
             </div>
           </header>
 
-          <main className="p-4">
+          <main className="flex-1 p-4 overflow-y-auto">
             {activeTab === 'itinerary' ? (
               <>
-                <SearchBar apiKey={apiKey} onAdd={s => saveLocs([...locations, s])} />
+                <SearchBar onAdd={s => saveLocs([...locations, s])} apiKey={apiKey} />
+                
                 <div className="flex gap-2 mb-6 overflow-x-auto no-scrollbar py-2">
                   {[1, 2, 3, 4].map(d => (
                     <button key={d} onClick={() => setActiveDay(d)} className={`flex-shrink-0 px-6 py-3 rounded-2xl text-xs font-bold transition-all ${activeDay === d ? 'bg-indigo-900 text-white shadow-xl scale-105' : 'bg-white text-stone-400 border border-stone-100 shadow-sm'}`}>
@@ -624,45 +197,184 @@
                   ))}
                 </div>
 
-                <div className="flex justify-between items-center mb-6">
-                  <div className="flex items-center gap-2"><div className="h-5 w-1.5 bg-indigo-500 rounded-full"></div><h2 className="font-black text-xl text-stone-800">Day {activeDay} 行程</h2></div>
-                  <div className="flex bg-white p-1 rounded-xl shadow-sm border border-stone-100">
-                    <button onClick={() => setViewMode('list')} className={`p-2 rounded-lg ${viewMode === 'list' ? 'bg-stone-100' : 'text-stone-300'}`}><List size={18} /></button>
-                    <button onClick={() => setViewMode('map')} className={`p-2 rounded-lg ${viewMode === 'map' ? 'bg-stone-100' : 'text-stone-300'}`}><MapIcon size={18} /></button>
-                  </div>
+                <div className="flex justify-between items-center mb-4">
+                  <h2 className="font-black text-xl text-stone-800">Day {activeDay} 行程表</h2>
+                  <button onClick={() => setViewMode(viewMode === 'list' ? 'map' : 'list')} className="p-2 bg-white rounded-xl shadow-sm border text-stone-400 active:scale-95 transition-transform">
+                    {viewMode === 'list' ? <MapIcon size={20}/> : <List size={20}/>}
+                  </button>
                 </div>
 
                 {viewMode === 'list' ? (
-                  <div className="space-y-1">
-                    {locations.length === 0 && <div className="text-center py-20 text-stone-300 font-medium">尚無行程，點擊搜尋加入景點</div>}
+                  <div className="space-y-3">
+                    {locations.length === 0 && <div className="text-center py-20 text-stone-300 font-medium">尚未安排行程，請搜尋新增</div>}
                     {locations.map((item, i) => (
-                      <React.Fragment key={item.id}>
-                        <ItineraryCard item={item} index={i} total={locations.length} isEditing={isEditing} onRequestDelete={idx => setDeleteModal({open:true, index:idx})} onUpdate={(idx,f,v) => handleUpdate(idx,f,v)} onMove={handleMove} />
-                        {i < locations.length - 1 && <RouteInfo data={routeInfos[i]} />}
-                      </React.Fragment>
+                      <ItineraryCard key={item.id} item={item} index={i} total={locations.length} isEditing={isEditing} onRequestDelete={idx => { const c = [...locations]; c.splice(idx, 1); saveLocs(c); }} onUpdate={(idx, f, v) => { const c = [...locations]; c[idx][f] = v; saveLocs(c); }} onMove={(idx, dir) => { const c = [...locations]; const t = idx + dir; if (t < 0 || t >= c.length) return; [c[idx], c[t]] = [c[t], c[idx]]; saveLocs(c); }} />
                     ))}
-                    <div className="flex justify-center mt-6">
-                      {locations.length > 1 && apiKey && <button onClick={calculateRoutes} disabled={calculatingRoutes} className="flex items-center gap-2 bg-stone-800 text-white px-5 py-2.5 rounded-full text-xs font-bold shadow-lg hover:bg-stone-900 active:scale-95 transition-all">{calculatingRoutes ? <Loader2 size={14} className="animate-spin" /> : <RotateCw size={14} />} {calculatingRoutes ? '計算中...' : '計算交通時間'}</button>}
-                    </div>
                   </div>
                 ) : (
-                  <GoogleMapView locations={locations} apiKey={apiKey} onAuthError={() => setAuthError(true)} />
+                  <div className="rounded-3xl overflow-hidden shadow-2xl border-4 border-white">
+                    <GoogleMapView locations={locations} apiKey={apiKey} />
+                  </div>
                 )}
               </>
-            ) : activeTab === 'wallet' ? (
-              <WalletTab />
             ) : (
-              <InfoTab apiKey={apiKey} setApiKey={setApiKey} />
+              <InfoTab apiKey={apiKey} setApiKey={setApiKey} isCloud={isCloudEnabled} />
             )}
           </main>
 
           <nav className="fixed bottom-0 left-0 right-0 bg-white/90 backdrop-blur-xl border-t px-8 py-4 flex justify-between items-center z-[100] safe-area-bottom shadow-2xl">
-            <button onClick={() => setActiveTab('itinerary')} className={`flex flex-col items-center gap-1 ${activeTab === 'itinerary' ? 'text-indigo-900' : 'text-stone-300'}`}><MapPin size={24} strokeWidth={activeTab === 'itinerary' ? 2.5 : 2} /><span className="text-[10px] font-bold">行程</span></button>
-            <button onClick={() => setActiveTab('wallet')} className={`flex flex-col items-center gap-1 ${activeTab === 'wallet' ? 'text-indigo-900' : 'text-stone-300'}`}><Wallet size={24} strokeWidth={activeTab === 'wallet' ? 2.5 : 2} /><span className="text-[10px] font-bold">記帳</span></button>
-            <button onClick={() => setActiveTab('info')} className={`flex flex-col items-center gap-1 ${activeTab === 'info' ? 'text-indigo-900' : 'text-stone-300'}`}><Key size={24} strokeWidth={activeTab === 'info' ? 2.5 : 2} /><span className="text-[10px] font-bold">設定</span></button>
+            <button onClick={() => setActiveTab('itinerary')} className={`flex flex-col items-center gap-1 ${activeTab === 'itinerary' ? 'text-indigo-900' : 'text-stone-300'}`}><MapPin size={26} strokeWidth={2.5}/><span className="text-[10px] font-black">行程</span></button>
+            <button onClick={() => alert('記帳功能建議維持本機模式，或待下階段更新')} className="text-stone-300 flex flex-col items-center gap-1"><Wallet size={26} /><span className="text-[10px] font-black">記帳</span></button>
+            <button onClick={() => setActiveTab('info')} className={`flex flex-col items-center gap-1 ${activeTab === 'info' ? 'text-indigo-900' : 'text-stone-300'}`}><Key size={26} /><span className="text-[10px] font-black">設定</span></button>
           </nav>
+        </div>
+      );
+    }
 
-          <DeleteConfirmModal isOpen={deleteModal.open} onClose={() => setDeleteModal({open:false, index:null})} onConfirm={() => { const c = [...locations]; c.splice(deleteModal.index, 1); saveLocs(c); setDeleteModal({open:false, index:null}); }} itemName={deleteModal.index !== null ? locations[deleteModal.index]?.name : ''} />
+    // --- 搜尋元件 (整合 New Places API) ---
+    function SearchBar({ onAdd, apiKey }) {
+      const [query, setQuery] = useState('');
+      const [results, setResults] = useState([]);
+      const [loading, setLoading] = useState(false);
+      const [isReady, setIsReady] = useState(false);
+
+      useEffect(() => {
+        if (!apiKey) return;
+        loadGoogleMapsScript(apiKey).then(() => setIsReady(true)).catch(console.error);
+      }, [apiKey]);
+
+      const handleSearch = async () => {
+        if (!query || !isReady) return;
+        setLoading(true);
+        try {
+          const { Place } = await google.maps.importLibrary("places");
+          const { places } = await Place.searchByText({
+            textQuery: query,
+            fields: ['displayName', 'location', 'formattedAddress', 'id', 'rating'],
+            locationBias: { lat: 33.59, lng: 130.42 }
+          });
+          setResults(places || []);
+        } catch (e) { console.error(e); } finally { setLoading(false); }
+      };
+
+      return (
+        <div className="relative mb-4">
+          <div className="flex gap-2">
+            <input className="flex-1 p-4 bg-white border border-stone-200 rounded-2xl shadow-sm text-sm outline-none focus:ring-2 focus:ring-indigo-500/10" placeholder={isReady ? "想去哪裡？" : "連線地圖中..."} value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSearch()} />
+            <button onClick={handleSearch} className="w-14 bg-indigo-900 text-white rounded-2xl flex items-center justify-center shadow-lg active:scale-95 transition-transform">
+              {loading ? <Loader2 size={20} className="animate-spin" /> : <Search size={24} />}
+            </button>
+          </div>
+          {results.length > 0 && (
+            <div className="absolute top-full left-0 right-0 mt-2 bg-white rounded-2xl shadow-2xl border z-[70] max-h-60 overflow-y-auto divide-y">
+              {results.map((p) => (
+                <button key={p.id} onClick={() => { onAdd({ id: Date.now(), type: 'spot', name: p.displayName, lat: p.location.lat(), lng: p.location.lng(), desc: p.formattedAddress, placeId: p.id, rating: p.rating, note: '', time: '' }); setQuery(''); setResults([]); }} className="w-full text-left p-4 hover:bg-stone-50">
+                  <div className="font-bold text-stone-800 text-sm">{p.displayName}</div>
+                  <div className="text-[10px] text-stone-400 truncate">{p.formattedAddress}</div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // --- 地圖元件 (新版 Advanced Marker) ---
+    function GoogleMapView({ locations, apiKey }) {
+      const mapRef = useRef(null);
+      const mapInstance = useRef(null);
+      const markers = useRef([]);
+
+      useEffect(() => {
+        if (!apiKey || !mapRef.current) return;
+        const init = async () => {
+          await loadGoogleMapsScript(apiKey);
+          const { Map } = await google.maps.importLibrary("maps");
+          const { AdvancedMarkerElement, PinElement } = await google.maps.importLibrary("marker");
+
+          if (!mapInstance.current) {
+            mapInstance.current = new Map(mapRef.current, { center: { lat: 33.59, lng: 130.42 }, zoom: 13, mapId: 'DEMO_MAP_ID', disableDefaultUI: true, zoomControl: true, gestureHandling: 'greedy' });
+          }
+
+          markers.current.forEach(m => m.map = null);
+          markers.current = [];
+          const bounds = new google.maps.LatLngBounds();
+          locations.forEach((loc, i) => {
+            const pin = new PinElement({ glyph: (i+1).toString(), background: '#4f46e5', borderColor: '#312e81', glyphColor: 'white' });
+            const marker = new AdvancedMarkerElement({ map: mapInstance.current, position: { lat: loc.lat, lng: loc.lng }, content: pin.element, title: loc.name });
+            markers.current.push(marker);
+            bounds.extend({ lat: loc.lat, lng: loc.lng });
+          });
+          if (locations.length > 0) mapInstance.current.fitBounds(bounds);
+        };
+        init();
+      }, [locations, apiKey]);
+
+      return <div ref={mapRef} className="w-full h-[50vh] bg-stone-100" />;
+    }
+
+    // --- 行程卡片 ---
+    function ItineraryCard({ item, index, total, isEditing, onRequestDelete, onUpdate, onMove }) {
+      const getIcon = (type) => {
+        switch(type) {
+          case 'food': return <Utensils size={18} className="text-orange-500"/>;
+          case 'shop': return <ShoppingBag size={18} className="text-pink-500"/>;
+          case 'transport': return <Train size={18} className="text-emerald-500"/>;
+          default: return <Camera size={18} className="text-indigo-500"/>;
+        }
+      };
+      return (
+        <div className={`bg-white rounded-2xl p-4 shadow-sm border border-stone-100 relative transition-all ${isEditing ? 'border-l-4 border-l-indigo-500' : ''}`}>
+          <div className="flex items-start gap-3">
+            {isEditing ? (
+              <div className="flex flex-col gap-1">
+                <button onClick={() => onMove(index, -1)} disabled={index===0} className="p-1 bg-stone-100 rounded text-stone-400 disabled:opacity-20"><ArrowUp size={16}/></button>
+                <button onClick={() => onMove(index, 1)} disabled={index===total-1} className="p-1 bg-stone-100 rounded text-stone-400 disabled:opacity-20"><ArrowDown size={16}/></button>
+              </div>
+            ) : (
+              <div className="flex flex-col items-center gap-1 mt-1 shrink-0">
+                <div className="w-6 h-6 bg-indigo-900 text-white rounded-full flex items-center justify-center text-[10px] font-black shadow-sm">{index+1}</div>
+                {item.time && <div className="text-[9px] font-mono font-bold bg-stone-50 px-1 rounded border">{item.time}</div>}
+              </div>
+            )}
+            <div className="mt-1 p-2 bg-stone-50 rounded-full">{getIcon(item.type)}</div>
+            <div className="flex-1 min-w-0">
+              <div className="flex justify-between items-start mb-1">
+                <div className="flex-1">
+                  <h3 className="font-bold text-stone-800 truncate leading-tight">{item.name}</h3>
+                  {isEditing && <input type="time" className="mt-1 bg-stone-100 text-[10px] px-1 rounded border" value={item.time||''} onChange={e=>onUpdate(index,'time',e.target.value)}/>}
+                  <p className="text-[10px] text-stone-400 truncate mt-0.5">{item.desc}</p>
+                </div>
+                {!isEditing && <a href={`https://www.google.com/maps/search/?api=1&query=${item.lat},${item.lng}`} target="_blank" className="p-2 text-blue-600 bg-blue-50 rounded-full active:scale-90"><Navigation size={16}/></a>}
+                {isEditing && <button onClick={()=>onRequestDelete(index)} className="p-2 text-red-500 bg-red-50 rounded-full active:scale-90"><Trash2 size={16}/></button>}
+              </div>
+              <input className="w-full text-xs text-stone-500 bg-stone-50/50 p-2 rounded-xl border border-transparent focus:border-indigo-100 focus:bg-white outline-none" placeholder="輸入備註..." value={item.note||''} onChange={e=>onUpdate(index,'note',e.target.value)} />
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // --- 設定頁面 ---
+    function InfoTab({ apiKey, setApiKey, isCloud }) {
+      return (
+        <div className="space-y-4 animate-in slide-in-from-bottom-4">
+          <div className="bg-indigo-50 p-6 rounded-3xl border border-indigo-100">
+            <h3 className="font-bold text-indigo-900 mb-2 flex items-center gap-2"><Key size={18}/> Google Maps Key</h3>
+            <input type="text" value={apiKey} onChange={e => {setApiKey(e.target.value); localStorage.setItem('google_maps_key', e.target.value);}} className="w-full p-3 bg-white border rounded-2xl font-mono text-xs" placeholder="Paste API Key" />
+            <button onClick={() => window.location.reload()} className="mt-3 w-full py-3 bg-indigo-600 text-white rounded-2xl font-bold text-sm shadow-md">套用並重整</button>
+          </div>
+          <div className="bg-white p-6 rounded-3xl border shadow-sm flex items-start gap-4">
+            <div className={`p-3 rounded-2xl ${isCloud ? 'bg-green-50 text-green-600' : 'bg-stone-50 text-stone-400'}`}>
+              {isCloud ? <Cloud size={24}/> : <CloudOff size={24}/>}
+            </div>
+            <div>
+              <h3 className="font-bold text-stone-800 text-sm">雲端同步狀態</h3>
+              <p className="text-xs text-stone-500 mt-1 leading-relaxed">
+                {isCloud ? "✅ 已成功連線至 Firebase。您在手機上所做的任何修改，您的旅伴打開此網址時都能同步看到。" : "⚠️ 尚未偵測到 Firebase Config。目前行程僅會儲存在這台手機中。"}
+              </p>
+            </div>
+          </div>
         </div>
       );
     }
